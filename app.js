@@ -257,15 +257,43 @@ $('useOrder').onclick = () => {
 };
 async function readyForPrint() { await Promise.all(Array.from($('pages').querySelectorAll('img')).map(im=>im.decode())); }
 $('print').onclick = async () => { if (!best || busy) return; try { await readyForPrint(); window.print(); } catch { status('An image could not be prepared for printing. Arrange again.'); } };
-async function asDataURL(url) { const blob = await (await fetch(url)).blob(); return new Promise((resolve,reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(blob); }); }
+const EXPORT_DPI = 200, EXPORT_QUALITY = 0.82;
+function blobToDataURL(blob) { return new Promise((resolve,reject) => { const reader = new FileReader(); reader.onload = () => resolve(reader.result); reader.onerror = reject; reader.readAsDataURL(blob); }); }
+async function asDataURL(url) { return blobToDataURL(await (await fetch(url)).blob()); }
+function exportPixelSize(mm) { return Math.max(1,Math.round(mm/25.4*EXPORT_DPI)); }
+function exportTargets(sol) {
+  const c = sol.config, targets = images.map(() => null);
+  sol.pages.forEach(page => {
+    page.rows.forEach(row => {
+      row.ids.forEach(id => {
+        const width = sol.scale*Math.sqrt(images[id].ratio*c.weights[id]);
+        const height = sol.scale*Math.sqrt(c.weights[id]/images[id].ratio);
+        targets[id] = {width:exportPixelSize(width),height:exportPixelSize(height)};
+      });
+    });
+  });
+  return targets;
+}
+async function exportSource(im,target) {
+  const blob = await (await fetch(im.display)).blob();
+  if (blob.type === 'image/svg+xml' || !target) return blobToDataURL(blob);
+  const source = await loadImage(im.display), width = Math.min(source.naturalWidth,target.width), height = Math.min(source.naturalHeight,target.height);
+  if (source.naturalWidth <= target.width && source.naturalHeight <= target.height) return blobToDataURL(blob);
+  const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#fff'; ctx.fillRect(0,0,width,height); ctx.drawImage(source,0,0,width,height);
+  const resized = await new Promise(resolve => canvas.toBlob(resolve,'image/jpeg',EXPORT_QUALITY));
+  if (!resized) throw new Error('A resized print image could not be created.');
+  return blobToDataURL(resized);
+}
 $('export').onclick = async () => {
   if (!best || busy) return;
-  busy = true; updateButtons(); status('Embedding full-resolution images into your print file…');
+  busy = true; updateButtons(); status('Preparing scaled print images for a smaller PDF…');
   try {
-    const sources = await Promise.all(images.map(im=>asDataURL(im.display))), c = best.config;
+    const targets = exportTargets(best), sources = await Promise.all(images.map((im,id)=>exportSource(im,targets[id]))), c = best.config;
     const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Image layout — print</title><style>@page{size:${c.pw}mm ${c.ph}mm;margin:0}*{box-sizing:border-box}body{margin:0;background:#e9ede7;font-family:system-ui}.toolbar{padding:20px;text-align:center}button{padding:12px 20px;cursor:pointer}.sheet-wrap{margin:24px auto;width:${c.pw}mm;max-width:95vw}.sheet-label{font-size:12px;color:#526455}.sheet{position:relative;background:white;overflow:hidden;width:100%}.print-image{position:absolute;display:block}@media print{body{background:white}.toolbar,.sheet-label{display:none}.sheet-wrap{margin:0;width:${c.pw}mm;max-width:none;break-after:page;page-break-after:always}.sheet-wrap:last-child{break-after:auto;page-break-after:auto}.sheet{width:${c.pw}mm;height:${c.ph}mm}}</style></head><body><div class="toolbar"><button id="print" disabled>Preparing images…</button><p>Use matching paper size, 100% scale, no margins, and turn off headers and footers. Choose Save as PDF to save a PDF.</p></div>${pageMarkup(best,sources)}<script>const b=document.getElementById('print');Promise.all(Array.from(document.images).map(i=>i.decode())).then(()=>{b.disabled=false;b.textContent='Print / Save PDF';b.onclick=()=>window.print();}).catch(()=>{b.textContent='An image could not load. Reopen this file.';});</script></body></html>`;
     const url = URL.createObjectURL(new Blob([html],{type:'text/html'})); const a = document.createElement('a'); a.href = url; a.download = 'image-layout-print.html'; document.body.append(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),60000);
-    status('Print file exported. Open it on any computer, then Print / Save PDF. Use matching paper size, 100% scale, no margins, and disable headers/footers.');
+    status('Print file exported with scaled print images for a smaller PDF. Open it on any computer, then Print / Save PDF. Use matching paper size, 100% scale, no margins, and disable headers/footers.');
   } catch(e) { status('Export failed: '+(e.message || 'Could not read an image.')); }
   finally { busy = false; updateButtons(); }
 };

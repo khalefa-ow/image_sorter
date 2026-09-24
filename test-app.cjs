@@ -21,17 +21,20 @@ class FakeImage {set src(url){const f=objects.get(url);queueMicrotask(()=>{if(f?
 class Reader{readAsDataURL(blob){blob.arrayBuffer().then(a=>{this.result='data:'+blob.type+';base64,'+Buffer.from(a).toString('base64');this.onload();});}}
 let lastDraw;
 class Canvas extends Element {
- getContext(){return {drawImage:(...args)=>{lastDraw=args.slice(1);}};}
- toBlob(callback){callback(new Blob([`clipped-${this.width}x${this.height}`],{type:'image/png'}));}
+ getContext(){return {fillStyle:'#fff',fillRect(){},drawImage:(...args)=>{lastDraw=args.slice(1);}};}
+ toBlob(callback,type='image/png',quality){
+  callback(new Blob([type==='image/png'?`clipped-${this.width}x${this.height}`:`scaled-${this.width}x${this.height}-${quality}`],{type}));
+ }
 }
 const context=vm.createContext({console,Blob,performance,Image:FakeImage,FileReader:Reader,URL:{createObjectURL(blob){const u='blob:test-'+next++;objects.set(u,blob);return u;},revokeObjectURL(u){objects.delete(u);}},fetch:async u=>({blob:async()=>objects.get(u)}),setTimeout:(f,n)=>setTimeout(f,n===60000?0:n),document:{getElementById:id=>elements.get(id),querySelectorAll:()=>[],createElement:()=>new Element(),head:new Element(),body:new Element(),documentElement:new Element()},window:{addEventListener(){},print(){}},LayoutEngine:require('./layout.js')});
 vm.runInContext(fs.readFileSync('app.js','utf8'),context);
 context.document.createElement=tag=>tag==='canvas'?new Canvas():new Element();
 const run = code=>vm.runInContext(code,context);
 const file=(name,width,height,bad=false)=>Object.assign(new Blob(['test-image'],{type:'image/png'}),{name,width,height,bad,lastModified:0});
+const embeddedPayloads = html => [...html.matchAll(/src="data:([^;]+);base64,([^"]+)"/g)].map(([,type,data])=>({type,payload:Buffer.from(data,'base64').toString()}));
 (async()=>{
- context.batch=[file('folder-one.png',1200,800),file('broken.png',0,0,true)];await run('readFiles(batch)');assert.equal(run('images.length'),1);assert.match(elements.get('status').textContent,/Could not open 1/);
- context.batch=[file('folder-two.png',800,900),file('quoted-<name>.png',1100,800)];await run('readFiles(batch)');assert.equal(run('images.length'),3);
+ context.batch=[file('folder-one.png',4800,3200),file('broken.png',0,0,true)];await run('readFiles(batch)');assert.equal(run('images.length'),1);assert.match(elements.get('status').textContent,/Could not open 1/);
+ context.batch=[file('folder-two.png',3200,3600),file('quoted-<name>.png',4400,3200)];await run('readFiles(batch)');assert.equal(run('images.length'),3);
  const weightControl=elements.get('gallery').children[0].children[0].children[0];weightControl.value='4.25';weightControl.onchange();assert.equal(run('images[0].weight'),4.25);
  weightControl.value='0';weightControl.onchange();assert.equal(run('images[0].weight'),4.25);assert.match(elements.get('status').textContent,/0.1 to 100/);
  weightControl.value='1';weightControl.onchange();
@@ -41,7 +44,7 @@ const file=(name,width,height,bad=false)=>Object.assign(new Blob(['test-image'],
  elements.get('mode').value='all';await run('arrange()');assert.match(elements.get('status').textContent,/Exhaustive search complete · 6 orders checked/);
  assert.match(elements.get('searchProgress').textContent,/100% · 6 \/ 6 orders checked/);assert.equal(elements.get('progress').value,6);assert.equal(elements.get('progress').hidden,false);
  await elements.get('useOrder').onclick();assert.deepEqual(Array.from(run('best.pages.flatMap(p=>p.rows.flatMap(r=>r.ids))')),[0,1,2]);
- await elements.get('export').onclick();const exported=[...objects.values()].find(b=>b.type==='text/html');assert(exported);const html=await exported.text();assert(!html.includes('blob:test-'));assert.equal((html.match(/src="data:image\/png;base64,/g)||[]).length,3);assert(html.includes('break-after:page'));assert(html.includes('size:215.9mm 279.4mm'));
+ await elements.get('export').onclick();const exported=[...objects.values()].find(b=>b.type==='text/html');assert(exported);const html=await exported.text();assert(!html.includes('blob:test-'));assert.equal((html.match(/src="data:image\/jpeg;base64,/g)||[]).length,3);assert(html.includes('break-after:page'));assert(html.includes('size:215.9mm 279.4mm'));assert(embeddedPayloads(html).every(({payload})=>payload.startsWith('scaled-')));
  assert.equal(run('validCrop({l:60,r:50,t:0,b:0})'),false);assert.equal(run('validCrop({l:10,r:10,t:0,b:20})'),true);
  // Apply a real crop operation through the editor handler; check canvas input,
  // saved source, geometry and the bytes selected for export.
@@ -55,7 +58,7 @@ const file=(name,width,height,bad=false)=>Object.assign(new Blob(['test-image'],
  await run('arrange()');assert.equal(run('best.config.weights[0]'),2);assert(elements.get('pages').innerHTML.includes(`src="${cropped.display}"`));
  const embeddedCrop=await run('asDataURL(images[0].display)');assert.equal(Buffer.from(embeddedCrop.split(',')[1],'base64').toString(),`clipped-${cropped.clippedWidth}x${cropped.clippedHeight}`);
  await elements.get('export').onclick();
- const cropExports=await Promise.all([...objects.values()].filter(b=>b.type==='text/html').map(b=>b.text()));assert(cropExports.some(h=>h.includes(embeddedCrop)));
+ const cropExports=await Promise.all([...objects.values()].filter(b=>b.type==='text/html').map(b=>b.text()));assert(cropExports.some(h=>embeddedPayloads(h).some(({type,payload})=>type==='image/jpeg' && payload.startsWith('scaled-'))));
  await elements.get('useOrder').onclick();assert.deepEqual(Array.from(run('best.config.weights')),Array.from(run('images.map(im=>im.weight)')));
  run('openEditor(images.find(im=>im.weight===2));setCrop({l:0,r:0,t:0,b:0})');elements.get('imageSize').value='1';await elements.get('saveCrop').onclick();
  assert.equal(run('editing.display'),originalURL);assert.equal(run('editing.ratio'),run('editing.width/editing.height'));
